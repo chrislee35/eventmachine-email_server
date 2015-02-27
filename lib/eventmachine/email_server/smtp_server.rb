@@ -6,9 +6,16 @@ module EventMachine
       @@graylist = nil
       @@dnsbl_client = nil
       @@ratelimiter = nil
-      @@reverse_ptr_check = true
+      @@reverse_ptr_check = false
       @@spf_check = false
       @@reject_filters = Array.new
+      
+      def self.reverse_ptr_check(ptr=nil)
+        if not ptr.nil?
+          @@reverse_ptr_check = ptr
+        end
+        @@reverse_ptr_check
+      end
       
       def self.graylist(graylist=nil)
         if graylist
