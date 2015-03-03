@@ -57,6 +57,10 @@ module EventMachine
       def delete_user(uid)
         raise "Unimplemented, please use a subclass of #{self.class}"
       end
+      
+      def count
+        raise "Unimplemented, please use a subclass of #{self.class}"
+      end
     end
   end
 end

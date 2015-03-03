@@ -138,6 +138,16 @@ module EventMachine
       def delete_user(uid)
         delete_by_field("uid", uid)
       end
+      
+      def count
+        sql = "SELECT COUNT(*) FROM #{@tablename}"
+        rs = @db.execute(sql)
+        c = 0
+        rs.each do |row|
+          c = row[0]
+        end
+        c
+      end
     end
   end
 end

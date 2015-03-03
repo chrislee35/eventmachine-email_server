@@ -1,10 +1,11 @@
 require 'eventmachine'
+require 'eventmachine/dnsbl'
 
 module EventMachine
 	module EmailServer
 		class SMTPServer < EventMachine::Connection
       @@graylist = nil
-      @@dnsbl_client = nil
+      @@dnsbl_check = nil
       @@ratelimiter = nil
       @@reverse_ptr_check = false
       @@spf_check = false
@@ -24,11 +25,11 @@ module EventMachine
         @@graylist
       end
       
-      def self.dnsbl(dnsbl_client=nil)
-        if dnsbl_client
-          @@dnsbl_client = dnsbl_client
+      def self.dnsbl_check(dnsbl_check=nil)
+        if not dnsbl_check.nil?
+          @@dnsbl_check = dnsbl_check
         end
-        @@dnsbl_client
+        @@dnsbl_check
       end
       
       def self.ratelimiter(ratelimiter=nil)
@@ -45,7 +46,7 @@ module EventMachine
         @@reject_filters
       end
       
-      def self.spf(spf=nil)
+      def self.spf_check(spf=nil)
         if not spf.nil?
           @@spf_check = spf
         end
@@ -64,6 +65,7 @@ module EventMachine
         @rate_ok = true
         @gray_ok = true
         @reject_ok = true
+        @pending_checks = Array.new
       end
       
       def post_init
@@ -85,18 +87,29 @@ module EventMachine
       def check_ptr(helo, ip)
         if @@reverse_ptr_check
           @ptr_ok = false
+          @pending_checks << :ptr
           d = EM::DNS::Resolver.resolve helo
           d.callback { |r|
             @ptr_ok = r.include?(ip)
+            @pending_checks -= [:ptr]
+            if @pending_checks.length == 0
+              send_answer
+            end
           }
         end
       end
       
       def check_dnsbl(ip)
-        if @@dnsbl_client
-          # this needs to be changed into a EM component with a callback
-          res = @@dnsbl_client.lookup(ip)
-          @dnsbl_ok = (res.length == 0)
+        if @@dnsbl_check
+          @dnsbl_ok = false
+          @pending_checks << :dnsbl
+          EventMachine::DNSBL::Client.check(ip) do |results|
+            @dnsbl_ok = ! EventMachine::DNSBL::Client.blacklisted?(results)
+            @pending_checks -= [:dnsbl]
+            if @pending_checks.length == 0
+              send_answer
+            end
+          end
         end
       end
       
@@ -122,26 +135,57 @@ module EventMachine
         end
       end
       
-      def check_spf(ip, domain)
+      def check_spf(from_domain)
         if @@spf_check
           @spf_ok = false
-          d = EM::DNS::Resolver.resolve helo
+          @pending_checks << :spf
+          d = EM::DNS::Resolver.resolve(from_domain, Resolv::DNS::Resource::IN::TXT)
+          d.errback { |r|
+            # fail open?
+            @spf_ok = true
+            @pending_checks -= [:spf]
+            if @pending_checks.length == 0
+              send_answer
+            end
+          }
           d.callback { |r|
-            @ptr_ok = r.include?(ip)
+            r.each do |rec|
+              #pp rec
+              if rec.start_with?('v=spf1')
+                if rec == "v=spf1 -all"
+                  @spf_ok = false
+                else
+                  # I need to create an SPF checker now :(
+                  @spf_ok = true
+                end
+              end
+            end
+            @pending_checks -= [:spf]
+            if @pending_checks.length == 0
+              send_answer
+            end
           }
         end
+      end
+      
+      def send_answer
+        if @ptr_ok and @rate_ok and @gray_ok and @reject_ok and @dnsbl_ok and @spf_ok
+          ans = "250 OK"
+        else
+          ans = "451 Requested action aborted: local error in processing"
+        end
+        puts "<< #{ans}" if @debug
+        send_data(ans+"\r\n")
       end
       
      	def process_line(line)
     		if (@data_mode) && (line.chomp =~ /^\.$/)
     			@data_mode = false
           check_reject
-          if @ptr_ok and @dnsbl_ok and @rate_ok and @gray_ok and @reject_ok
-            save
-          else
-            return true, "451	Requested action aborted: local error in processing"
+          if @pending_checks.length == 0
+            send_answer
           end
-    			return true, "250 OK"
+          return true, nil
     		elsif @data_mode
     			@email_body += line
     			return true, nil
@@ -157,6 +201,9 @@ module EventMachine
     			return false, "221 bye bye"
     		elsif (line =~ /^MAIL FROM\:/)
     			@mail_from = (/^MAIL FROM\:<(.+)>.*$/).match(line)[1]
+          if @@spf_check
+            check_spf(@mail_from.split(/@/,2)[1])
+          end
     			return true, "250 OK"
     		elsif (line =~ /^RCPT TO\:/)
     			rcpt_to = (/^RCPT TO\:<(.+)>.*$/).match(line)[1]

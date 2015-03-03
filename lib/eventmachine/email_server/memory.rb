@@ -52,6 +52,10 @@ module EventMachine
       def delete_user(uid)
         @emails.delete_if {|email| email.uid == uid}
       end
+      
+      def count
+        @emails.length
+      end
     end
   end
 end
