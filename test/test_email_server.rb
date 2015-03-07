@@ -133,6 +133,7 @@ Looks like we had fun!
   
   def test_graylisting
     return unless @test_vector.call(__method__)
+    SMTPServer.reset
     SMTPServer.graylist(Hash.new)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
@@ -161,6 +162,7 @@ Looks like we had fun!
     }
     storage = RateLimit::Memory.new
     rl = RateLimit::BucketBased.new(storage, config, 'default')
+    SMTPServer.reset
     SMTPServer.ratelimiter(rl)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
@@ -220,6 +222,7 @@ Looks like we had fun!
         "127.0.0.2" => "Blacklisted as an example"
       }
     })
+    SMTPServer.reset
     SMTPServer.dnsbl_check(true)
     
     userstore = MemoryUserStore.new
@@ -255,32 +258,13 @@ Looks like we had fun!
     }
   end
   
-  def test_spf_resolution
-    return unless @test_vector.call(__method__)
-    EM.run {
-      d = EventMachine::DNS::Resolver.resolve("example.com", Resolv::DNS::Resource::IN::TXT)
-      d.errback do |r|
-        fail "dns resolution failed"
-        EM.stop
-      end
-      d.callback do |r|
-        refute_nil(r)
-        assert_equal(2, r.length)
-        refute_nil(r.index("v=spf1 -all"))
-        EM.stop
-      end
-      timer = EventMachine::Timer.new(10) do
-        EM.stop
-      end
-    }
-  end
-
   def test_spf
     return unless @test_vector.call(__method__)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
     setup_user(userstore)
     
+    SMTPServer.reset
     SMTPServer.spf_check(true)
     EM.run {
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
@@ -314,6 +298,7 @@ Looks like we had fun!
     rl = RateLimit::BucketBased.new(storage, config, 'default')
   
   
+    SMTPServer.reset
     SMTPServer.reverse_ptr_check(true)
     SMTPServer.graylist(Hash.new)
     SMTPServer.ratelimiter(rl)

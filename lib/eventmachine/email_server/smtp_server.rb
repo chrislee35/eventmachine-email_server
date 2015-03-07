@@ -1,5 +1,6 @@
 require 'eventmachine'
 require 'eventmachine/dnsbl'
+require 'spf'
 
 module EventMachine
 	module EmailServer
@@ -10,6 +11,15 @@ module EventMachine
       @@reverse_ptr_check = false
       @@spf_check = false
       @@reject_filters = Array.new
+      
+      def self.reset
+        @@graylist = nil
+        @@dnsbl_check = nil
+        @@ratelimiter = nil
+        @@reverse_ptr_check = false
+        @@spf_check = false
+        @@reject_filters = Array.new
+      end
       
       def self.reverse_ptr_check(ptr=nil)
         if not ptr.nil?
@@ -135,36 +145,53 @@ module EventMachine
         end
       end
       
-      def check_spf(from_domain)
+      def check_spf(helo, client_ip, identity)
         if @@spf_check
           @spf_ok = false
           @pending_checks << :spf
-          d = EM::DNS::Resolver.resolve(from_domain, Resolv::DNS::Resource::IN::TXT)
-          d.errback { |r|
-            # fail open?
-            @spf_ok = true
-            @pending_checks -= [:spf]
-            if @pending_checks.length == 0
-              send_answer
+          
+          spf_dispatcher = EventMachine::ThreadedResource.new do
+            spf_server = SPF::Server.new
+          end
+
+          pool = EM::Pool.new
+
+          pool.add spf_dispatcher
+
+          pool.perform do |dispatcher|
+            completion = dispatcher.dispatch do |spf_server|
+
+              request = SPF::Request.new(
+                versions:      [1, 2],             # optional
+                scope:         'mfrom',            # or 'helo', 'pra'
+                identity:      identity,
+                ip_address:    client_ip,
+                helo_identity: helo   # optional
+              )
+
+              result = spf_server.process(request)
             end
-          }
-          d.callback { |r|
-            r.each do |rec|
-              #pp rec
-              if rec.start_with?('v=spf1')
-                if rec == "v=spf1 -all"
-                  @spf_ok = false
-                else
-                  # I need to create an SPF checker now :(
-                  @spf_ok = true
-                end
+  
+            completion.callback do |result|
+              if result.code == :pass
+                @spf_ok = true
+              elsif result.code == :fail
+                @spf_ok = false
+              elsif result.code == :softfail
+                @spf_ok = true
+              elsif result.code == :neutral
+                @spf_ok = true
+              else
+                @spf_ok = false
+              end
+              @pending_checks -= [:spf]
+              if @pending_checks.length == 0
+                send_answer
               end
             end
-            @pending_checks -= [:spf]
-            if @pending_checks.length == 0
-              send_answer
-            end
-          }
+  
+            completion
+          end          
         end
       end
       
@@ -202,7 +229,8 @@ module EventMachine
     		elsif (line =~ /^MAIL FROM\:/)
     			@mail_from = (/^MAIL FROM\:<(.+)>.*$/).match(line)[1]
           if @@spf_check
-            check_spf(@mail_from.split(/@/,2)[1])
+            port, ip = Socket.unpack_sockaddr_in(get_peername)
+            check_spf(helo, ip, @mail_from)
           end
     			return true, "250 OK"
     		elsif (line =~ /^RCPT TO\:/)
