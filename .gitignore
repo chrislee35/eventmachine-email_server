@@ -13,3 +13,4 @@
 *.a
 mkmf.log
 /test/*.sqlite3
+/test/test.classifier

@@ -11,6 +11,7 @@ module EventMachine
       @@reverse_ptr_check = false
       @@spf_check = false
       @@reject_filters = Array.new
+      @@classifier = nil
       
       def self.reset
         @@graylist = nil
@@ -19,6 +20,7 @@ module EventMachine
         @@reverse_ptr_check = false
         @@spf_check = false
         @@reject_filters = Array.new
+        @classifier = nil
       end
       
       def self.reverse_ptr_check(ptr=nil)
@@ -61,7 +63,14 @@ module EventMachine
           @@spf_check = spf
         end
         @@spf_check
-      end 
+      end
+      
+      def self.classifier(classifier=nil)
+        if not classifier.nil?
+          @@classifier = classifier
+        end
+        @@classifier
+      end
 
       def initialize(hostname, userstore, emailstore)
         @hostname = hostname
@@ -74,7 +83,9 @@ module EventMachine
         @dnsbl_ok = true
         @rate_ok = true
         @gray_ok = true
+        @spf_ok = true
         @reject_ok = true
+        @classifier_ok = true
         @pending_checks = Array.new
       end
       
@@ -145,6 +156,14 @@ module EventMachine
         end
       end
       
+      def check_classifier
+        if @@classifier
+          if @@classifier.block?(@email_body)
+            @classifier_ok = false
+          end
+        end
+      end
+      
       def check_spf(helo, client_ip, identity)
         if @@spf_check
           @spf_ok = false
@@ -196,7 +215,16 @@ module EventMachine
       end
       
       def send_answer
-        if @ptr_ok and @rate_ok and @gray_ok and @reject_ok and @dnsbl_ok and @spf_ok
+        if @debug
+          puts "ptr_ok        = #{@ptr_ok}"
+          puts "rate_ok       = #{@rate_ok}"
+          puts "gray_ok       = #{@gray_ok}"
+          puts "reject_ok     = #{@reject_ok}"
+          puts "dnsbl_ok      = #{@dnsbl_ok}"
+          puts "spf_ok        = #{@spf_ok}"
+          puts "classifier_ok = #{@classifier_ok}"
+        end
+        if @ptr_ok and @rate_ok and @gray_ok and @reject_ok and @dnsbl_ok and @spf_ok and @classifier_ok
           ans = "250 OK"
         else
           ans = "451 Requested action aborted: local error in processing"
@@ -209,6 +237,7 @@ module EventMachine
     		if (@data_mode) && (line.chomp =~ /^\.$/)
     			@data_mode = false
           check_reject
+          check_classifier
           if @pending_checks.length == 0
             send_answer
           end

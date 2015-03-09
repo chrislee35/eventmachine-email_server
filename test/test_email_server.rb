@@ -27,21 +27,19 @@ class TestEmailServer < Minitest::Test
     @test_vector = Proc.new { |test_name|
       (test_name.to_s =~ /test/)
     }
-    if File.exist?("test/test.sqlite3")
-      File.unlink("test/test.sqlite3")
-    end
-    if File.exist?("email_server.sqlite3")
-      File.unlink("email_server.sqlite3")
-    end
+    remove_scraps
   end
   
+  def remove_scraps
+    ["test.sqlite3", "email_server.sqlite3"].each do |f|
+      if File.exist?("test/#{f}")
+        File.unlink("test/#{f}")
+      end
+    end
+  end    
+  
   def teardown
-    if File.exist?("test/test.sqlite3")
-      File.unlink("test/test.sqlite3")
-    end
-    if File.exist?("email_server.sqlite3")
-      File.unlink("email_server.sqlite3")
-    end
+    remove_scraps
   end
   
   def setup_user(userstore)
@@ -68,6 +66,38 @@ Looks like we had fun!
       assert_equal(expected_status, ret.status)
     end
   end
+  
+  def send_spam(expected_status="451")
+    from = "friend@example.org"
+    to = "chris@example.org"
+    msg = "From: friend@example.org
+To: chris@example.org
+Subject: What to do when you're not doing.
+
+Could I interest you in some cialis?
+"
+    Thread.new do
+      smtp = Net::SMTP.start('localhost', 2025)
+      ret = smtp.send_message msg, from, to
+      assert_equal(expected_status, ret.status)
+    end
+  end    
+  
+  def send_ham(expected_status="250")
+    from = "friend@example.org"
+    to = "chris@example.org"
+    msg = "From: friend@example.org
+To: chris@example.org
+Subject: Good show
+
+Have you seen the latest Peppa Pig?
+"
+    Thread.new do
+      smtp = Net::SMTP.start('localhost', 2025)
+      ret = smtp.send_message msg, from, to
+      assert_equal(expected_status, ret.status)
+    end
+  end    
   
   def pop_some_email
     Thread.new do 
@@ -277,6 +307,28 @@ Looks like we had fun!
     }
     
   end
+  
+  def test_classifier
+    return unless @test_vector.call(__method__)
+    userstore = MemoryUserStore.new
+    emailstore = MemoryEmailStore.new
+    setup_user(userstore)
+    SMTPServer.reset
+    classifier = EventMachine::EmailServer::Classifier.new("test/test.classifier", [:spam, :ham], [:spam])
+    classifier.train(:spam, "Amazing pillz viagra cialis levitra staxyn")
+    classifier.train(:ham, "Big pigs make great bacon")
+    SMTPServer.classifier(classifier)
+    EM.run {
+      smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
+      timer = EventMachine::Timer.new(0.1) do
+        send_spam("451")
+        send_ham("250")
+      end
+      timer2 = EventMachine::Timer.new(1) do
+        EM.stop
+      end
+    }
+  end
     
   def test_example
     return unless @test_vector.call(__method__)
@@ -297,13 +349,18 @@ Looks like we had fun!
     storage = RateLimit::Memory.new
     rl = RateLimit::BucketBased.new(storage, config, 'default')
   
+    classifier = EventMachine::EmailServer::Classifier.new("test/test.classifier", [:spam, :ham], [:spam])
+    classifier.train(:spam, "Amazing pillz viagra cialis levitra staxyn")
+    classifier.train(:ham, "Big pigs make great bacon")
   
     SMTPServer.reset
     SMTPServer.reverse_ptr_check(true)
     SMTPServer.graylist(Hash.new)
     SMTPServer.ratelimiter(rl)
     SMTPServer.dnsbl_check(true)  
+    SMTPServer.spf_check(true)
     SMTPServer.reject_filters << /viagra/i
+    SMTPServer.classifier(classifier)
   
     EM.run {
       pop3 = EventMachine::start_server "0.0.0.0", 2110, POP3Server, "example.org", userstore, emailstore
@@ -313,7 +370,5 @@ Looks like we had fun!
       end
     }
   end
-  
-  
    
 end
