@@ -86,7 +86,7 @@ module EventMachine
         @spf_ok = true
         @reject_ok = true
         @classifier_ok = true
-        @pending_checks = Array.new
+        @pending_checks = [:content]
       end
       
       def post_init
@@ -239,6 +239,7 @@ module EventMachine
     			@data_mode = false
           check_reject
           check_classifier
+          @pending_checks -= [:content]
           if @pending_checks.length == 0
             send_answer
           end

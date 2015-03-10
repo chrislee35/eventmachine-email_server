@@ -12,13 +12,11 @@ require 'net/pop'
 require 'net/smtp'
 require 'ratelimit/bucketbased'
 
-module EventMachine
-  module DNS
-    class Socket < EventMachine::Connection
-      def send_packet(pkt)
-        send_datagram(pkt, nameserver, 53)
-      end
-    end
+$dns_port = 53
+
+class EventMachine::DNS::Socket < EventMachine::Connection
+  def send_packet(pkt)
+    send_datagram(pkt, nameserver, $dns_port)
   end
 end
 
@@ -28,7 +26,7 @@ class TestEmailServer < Minitest::Test
   def setup
     @test_vector = Proc.new { |test_name|
       puts "***** #{test_name} *****"
-      (test_name.to_s =~ /sqlite3/)
+      (test_name.to_s =~ /test/)
     }
     @spam_email = EmailTemplate.new("friend@example.org", "chris@example.org", "From: friend@example.org
 To: chris@example.org
@@ -263,6 +261,9 @@ Looks like we had fun!
 
   def test_dnsbl
     return unless @test_vector.call(__method__)
+
+    $dns_port = 2053
+
     #Monkeypatching for testing
     memzone = EventMachine::DNSBL::Zone::MemoryZone.new
     EM::DNS::Resolver.nameservers = ["127.0.0.1"]
@@ -312,6 +313,7 @@ Looks like we had fun!
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
     setup_user(userstore)
+    $dns_port = 53
 
     SMTPServer.spf_check(true)
     EM.run {
@@ -363,9 +365,8 @@ Looks like we had fun!
     #require 'ratelimit/bucketbased'
     #require 'dnsbl/client'
 
-    #require 'sqlite3'
-    userstore = MemoryUserStore.new(s)
-    emailstore = MemoryEmailStore.new(s)
+    userstore = MemoryUserStore.new()
+    emailstore = MemoryEmailStore.new()
     userstore << User.new(1, "chris", "chris", "chris@example.org")
 
     config = {
