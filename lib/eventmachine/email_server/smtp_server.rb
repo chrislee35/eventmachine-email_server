@@ -97,11 +97,7 @@ module EventMachine
 			def receive_data(data)
         puts ">> #{data}" if @debug
         data.split(/\n/).each do |line|
-          ok, op = process_line(line+"\n")
-          if op
-            puts "<< #{op}" if @debug
-            send_data(op+"\r\n")
-          end
+          process_line(line+"\n")
         end
       end
       
@@ -226,11 +222,16 @@ module EventMachine
         end
         if @ptr_ok and @rate_ok and @gray_ok and @reject_ok and @dnsbl_ok and @spf_ok and @classifier_ok
           ans = "250 OK"
+          save
         else
           ans = "451 Requested action aborted: local error in processing"
         end
-        puts "<< #{ans}" if @debug
-        send_data(ans+"\r\n")
+        send(ans)
+      end
+      
+      def send(msg)
+        puts "<< #{msg}" if @debug
+        send_data("#{msg}\r\n")
       end
       
      	def process_line(line)
@@ -241,10 +242,8 @@ module EventMachine
           if @pending_checks.length == 0
             send_answer
           end
-          return true, nil
     		elsif @data_mode
     			@email_body += line
-    			return true, nil
     		elsif (line =~ /^(HELO|EHLO) (.*)/)
           helo = $2.chomp
           port, ip = Socket.unpack_sockaddr_in(get_peername)
@@ -252,32 +251,35 @@ module EventMachine
           check_dnsbl(ip)
           check_gray(ip)
           check_ratelimit(ip)
-    			return true, "250 hello #{ip} (#{helo})"
+          send("250 hello #{ip} (#{helo})")
     		elsif (line =~ /^QUIT/)
-    			return false, "221 bye bye"
+          send("221 #{@hostname} ESMTP server closing connection")
+          self.close_connection
     		elsif (line =~ /^MAIL FROM\:/)
     			@mail_from = (/^MAIL FROM\:<(.+)>.*$/).match(line)[1]
           if @@spf_check
             port, ip = Socket.unpack_sockaddr_in(get_peername)
             check_spf(helo, ip, @mail_from)
           end
-    			return true, "250 OK"
+          send("250 OK")
     		elsif (line =~ /^RCPT TO\:/)
     			rcpt_to = (/^RCPT TO\:<(.+)>.*$/).match(line)[1]
     			if @userstore.user_by_emailaddress(rcpt_to.strip)
     				@rcpt_to = rcpt_to
-    				return true, "250 OK"
-    			end
-    			return false, "550 No such user here"
+            send("250 OK")
+          else
+            send("550 No such user here")
+          end
     		elsif (line =~ /^DATA/)
     			if @rcpt_to
     				@data_mode = true
     				@email_body = ''
-    				return true, "354 Enter message, ending with \".\" on a line by itself"
-    			end
-    			return true, "500 ERROR"
+    				send("354 Enter message, ending with \".\" on a line by itself")
+          else
+            send("500 ERROR")
+          end
     		else
-    			return true, "500 ERROR"
+    			send("500 ERROR")
     		end
     	end
       

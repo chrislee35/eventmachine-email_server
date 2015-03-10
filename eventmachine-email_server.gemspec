@@ -19,7 +19,6 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_runtime_dependency "eventmachine", ">= 0.12.10"
-  spec.add_runtime_dependency "sqlite3", ">= 1.3.6"
   spec.add_runtime_dependency "ratelimit-bucketbased", ">= 0.0.1"
   spec.add_runtime_dependency "eventmachine-dnsbl", ">= 0.0.2"
   spec.add_runtime_dependency "spf", ">= 0.0.44"

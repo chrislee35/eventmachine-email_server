@@ -14,7 +14,7 @@ require 'ratelimit/bucketbased'
 
 module EventMachine
   module DNS
-    class Socket < EventMachine::Connection    
+    class Socket < EventMachine::Connection
       def send_packet(pkt)
         send_datagram(pkt, nameserver, 53)
       end
@@ -22,128 +22,151 @@ module EventMachine
   end
 end
 
+class EmailTemplate < Struct.new(:from, :to, :msg); end
+
 class TestEmailServer < Minitest::Test
   def setup
     @test_vector = Proc.new { |test_name|
-      (test_name.to_s =~ /test/)
+      puts "***** #{test_name} *****"
+      (test_name.to_s =~ /sqlite3/)
     }
+    @spam_email = EmailTemplate.new("friend@example.org", "chris@example.org", "From: friend@example.org
+To: chris@example.org
+Subject: What to do when you're not doing.
+
+Could I interest you in some cialis?
+")
+    @ham_email = EmailTemplate.new("friend@example.org", "chris@example.org", "From: friend@example.org
+To: chris@example.org
+Subject: Good show
+
+Have you seen the latest Peppa Pig?
+")
+    @default_email = EmailTemplate.new("friend@example.org", "chris@example.org", "From: friend@example.org
+To: chris@example.org
+Subject: Can't remember last night
+
+Looks like we had fun!
+")
+    @pool = EM::Pool.new
+    SMTPServer.reset
     remove_scraps
   end
-  
+
   def remove_scraps
     ["test.sqlite3", "email_server.sqlite3"].each do |f|
       if File.exist?("test/#{f}")
         File.unlink("test/#{f}")
       end
     end
-  end    
-  
+  end
+
   def teardown
     remove_scraps
   end
-  
+
   def setup_user(userstore)
     userstore << User.new(1, "chris", "chris", "chris@example.org")
   end
-  
+
   def start_servers(userstore, emailstore)
     pop3 = EventMachine::start_server "0.0.0.0", 2110, POP3Server, "example.org", userstore, emailstore
     smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-  end  
-  
-  def send_email(expected_status="250")
-    from = "friend@example.org"
-    to = "chris@example.org"
-    msg = "From: friend@example.org
-To: chris@example.org
-Subject: Can't remember last night
+  end
 
-Looks like we had fun!
-"
-    Thread.new do
-      smtp = Net::SMTP.start('localhost', 2025)
-      ret = smtp.send_message msg, from, to
-      assert_equal(expected_status, ret.status)
+
+  def send_email(email=@default_email, &callback)
+    smtp_dispatcher = EventMachine::ThreadedResource.new do
+      smtp = Net::SMTP.new('localhost', 2025)
+    end
+
+    @pool.add smtp_dispatcher
+
+    @pool.perform do |dispatcher|
+      completion = dispatcher.dispatch do |smtp|
+        ret = nil
+        smtp.start do |s|
+          begin
+            ret = s.send_message email.msg, email.from, email.to
+          rescue => e
+            ret = "451"
+          end
+          begin
+            smtp.quit
+          rescue => e
+          end
+        end
+        if ret.respond_to? :status
+          ret = ret.status
+        end
+        ret
+      end
+
+      completion.callback do |result|
+        callback.call(result)
+      end
+
+      completion
     end
   end
-  
-  def send_spam(expected_status="451")
-    from = "friend@example.org"
-    to = "chris@example.org"
-    msg = "From: friend@example.org
-To: chris@example.org
-Subject: What to do when you're not doing.
 
-Could I interest you in some cialis?
-"
-    Thread.new do
-      smtp = Net::SMTP.start('localhost', 2025)
-      ret = smtp.send_message msg, from, to
-      assert_equal(expected_status, ret.status)
+  def pop_email(&callback)
+
+    pop3_dispatcher = EventMachine::ThreadedResource.new do
     end
-  end    
-  
-  def send_ham(expected_status="250")
-    from = "friend@example.org"
-    to = "chris@example.org"
-    msg = "From: friend@example.org
-To: chris@example.org
-Subject: Good show
 
-Have you seen the latest Peppa Pig?
-"
-    Thread.new do
-      smtp = Net::SMTP.start('localhost', 2025)
-      ret = smtp.send_message msg, from, to
-      assert_equal(expected_status, ret.status)
-    end
-  end    
-  
-  def pop_some_email
-    Thread.new do 
-      pop = Net::POP3.APOP(true).new('localhost',2110)
-      pop.start("chris","chris")
-      refute(pop.mails.empty?)
-      pop.each_mail do |m|
-        assert_equal("From: friend@example.org
-To: chris@example.org
-Subject: Can't remember last night
+    @pool.add pop3_dispatcher
 
-Looks like we had fun!
-", m.mail)
-        m.delete
+    @pool.perform do |dispatcher|
+      completion = dispatcher.dispatch do |pop|
+        pop = Net::POP3.APOP(true).new('localhost',2110)
+        pop.start("chris","chris")
+        answers = Array.new
+        answers << pop.mails.empty?
+        if not pop.mails.empty?
+          pop.each_mail do |m|
+            answers << m.mail
+            m.delete
+          end
+        end
+        pop.finish
+        answers
       end
-    end
-  end    
 
-  def pop_no_email
-    Thread.new do 
-      pop = Net::POP3.APOP(true).new('localhost',2110)
-      pop.start("chris","chris")
-      assert(pop.mails.empty?)
+      completion.callback do |answers|
+        callback.call(answers)
+      end
+
+      completion
     end
-  end  
+  end
 
   def run_test(userstore, emailstore)
     EM.run {
       start_servers(userstore, emailstore)
-      timer = EventMachine::Timer.new(0.1) do
-        send_email
-      end
-      timer2 = EventMachine::Timer.new(0.2) do
-        pop_some_email
-      end
-      
-      timer3 = EventMachine::Timer.new(0.3) do
-        pop_no_email
-      end
-      
-      timer4 = EventMachine::Timer.new(0.4) do
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
       end
-    }  
+      EM::Timer.new(0.1) do
+        pop_email do |answers|
+          assert_equal(true, answers[0])
+          send_email do |result|
+            assert_equal("250", result)
+            pop_email do |answers|
+              assert_equal(false, answers[0])
+              assert_equal(@default_email.msg.gsub(/[\r\n]+/,"\n"), answers[1].gsub(/[\r\n]+/,"\n"))
+              pop_email do |answers|
+                assert_equal(true, answers[0])
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    }
   end
-  
+
   def test_memory_store
     return unless @test_vector.call(__method__)
     userstore = MemoryUserStore.new
@@ -152,18 +175,8 @@ Looks like we had fun!
     run_test(userstore, emailstore)
   end
   
-  def test_sqlite3_store
-    return unless @test_vector.call(__method__)
-    s = SQLite3::Database.new("test/test.sqlite3")
-    userstore = Sqlite3UserStore.new(s)
-    emailstore = Sqlite3EmailStore.new(s)
-    setup_user(userstore)
-    run_test(userstore, emailstore)
-  end
-  
   def test_graylisting
     return unless @test_vector.call(__method__)
-    SMTPServer.reset
     SMTPServer.graylist(Hash.new)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
@@ -171,20 +184,23 @@ Looks like we had fun!
 
     EM.run {
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-      
-      timer = EventMachine::Timer.new(0.1) do
-        send_email("451")
-      end
-      timer2 = EventMachine::Timer.new(0.2) do
-        send_email
-      end
-      timer3 = EventMachine::Timer.new(0.3) do
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
       end
-      
+
+      timer = EventMachine::Timer.new(0.1) do
+        send_email do |result|
+          assert_equal("451", result)
+          send_email do |result|
+            assert_equal("250", result)
+            EM.stop
+          end
+        end
+      end
     }
   end
- 
+
   def test_ratelimit
     return unless @test_vector.call(__method__)
     config = {
@@ -192,7 +208,6 @@ Looks like we had fun!
     }
     storage = RateLimit::Memory.new
     rl = RateLimit::BucketBased.new(storage, config, 'default')
-    SMTPServer.reset
     SMTPServer.ratelimiter(rl)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
@@ -200,21 +215,26 @@ Looks like we had fun!
 
     EM.run {
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-      
-      timer = EventMachine::Timer.new(0.1) do
-        Thread.new do
-          2.times do
-            send_email
-          end
-          send_email("451")
-        end
-      end
-      timer2 = EventMachine::Timer.new(0.3) do
+
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
+      end
+      timer = EventMachine::Timer.new(0.1) do
+        send_email do |result|
+          assert_equal("250", result)
+          send_email do |result|
+            assert_equal("250", result)
+            send_email do |result|
+              assert_equal("451", result)
+              EM.stop
+            end
+          end
+        end
       end
     }
   end
-  
+
   def test_reject_list
     return unless @test_vector.call(__method__)
     userstore = MemoryUserStore.new
@@ -223,23 +243,24 @@ Looks like we had fun!
 
     EM.run {
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-      
-      timer = EventMachine::Timer.new(0.1) do
-        Thread.new do
-          send_email
-          SMTPServer.reject_filters << /remember/
-        end
-      end
-      timer2 = EventMachine::Timer.new(0.2) do
-        send_email("451")
-      end
-      timer3 = EventMachine::Timer.new(0.3) do
+
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
       end
-      
+      timer = EventMachine::Timer.new(0.1) do
+        send_email do |result|
+          assert_equal("250", result)
+          SMTPServer.reject_filters << /remember/
+          send_email do |result|
+            assert_equal("451", result)
+            EM.stop
+          end
+        end
+      end
     }
   end
-  
+
   def test_dnsbl
     return unless @test_vector.call(__method__)
     #Monkeypatching for testing
@@ -252,9 +273,8 @@ Looks like we had fun!
         "127.0.0.2" => "Blacklisted as an example"
       }
     })
-    SMTPServer.reset
     SMTPServer.dnsbl_check(true)
-    
+
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
     setup_user(userstore)
@@ -262,106 +282,110 @@ Looks like we had fun!
     EM.run {
       EM::open_datagram_socket "0.0.0.0", 2053, EventMachine::DNSBL::Server, memzone
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-      timer = EventMachine::Timer.new(0.1) do
-        send_email
-      end
-      
-      timer2 = EventMachine::Timer.new(1.2) do
-        memzone.add_dnsblresource(
-          EventMachine::DNSBL::Zone::DNSBLResourceRecord.new(
-            "example.com", 
-            /\d+\.0\.0\.127$/, 
-            300, 
-            Resolv::DNS::Resource::IN::A.new("127.0.0.4"),
-            Time.now.to_i + 3600
-          )
-        )
-        Thread.new do
-          send_email("451")
-        end
-      end
-      
-      timer3 = EventMachine::Timer.new(3.0) do
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
       end
-            
+      timer = EventMachine::Timer.new(0.1) do
+        send_email do |result|
+          assert_equal("250", result)
+          memzone.add_dnsblresource(
+            EventMachine::DNSBL::Zone::DNSBLResourceRecord.new(
+              "example.com",
+              /\d+\.0\.0\.127$/,
+              300,
+              Resolv::DNS::Resource::IN::A.new("127.0.0.4"),
+              Time.now.to_i + 3600
+            )
+          )
+          send_email do |result|
+            assert_equal("451", result)
+            EM.stop
+          end
+        end
+      end
     }
   end
-  
+
   def test_spf
     return unless @test_vector.call(__method__)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
     setup_user(userstore)
-    
-    SMTPServer.reset
+
     SMTPServer.spf_check(true)
     EM.run {
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-      timer = EventMachine::Timer.new(0.1) do
-        send_email("451")
-      end
-      timer2 = EventMachine::Timer.new(1) do
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
       end
+      timer = EventMachine::Timer.new(0.1) do
+        send_email do |result|
+          assert_equal("451", result)
+          EM.stop
+        end
+      end
     }
-    
   end
-  
+
   def test_classifier
     return unless @test_vector.call(__method__)
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
     setup_user(userstore)
-    SMTPServer.reset
     classifier = EventMachine::EmailServer::Classifier.new("test/test.classifier", [:spam, :ham], [:spam])
     classifier.train(:spam, "Amazing pillz viagra cialis levitra staxyn")
     classifier.train(:ham, "Big pigs make great bacon")
     SMTPServer.classifier(classifier)
     EM.run {
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
-      timer = EventMachine::Timer.new(0.1) do
-        send_spam("451")
-        send_ham("250")
-      end
-      timer2 = EventMachine::Timer.new(1) do
+      EM::Timer.new(10) do
+        fail "Test timed out"
         EM.stop
+      end
+      timer = EventMachine::Timer.new(0.1) do
+        send_email(@spam_email) do |result|
+          assert_equal("451", result)
+          send_email(@ham_email) do |result|
+            assert_equal("250", result)
+            EM.stop
+          end
+        end
       end
     }
   end
-    
+
   def test_example
     return unless @test_vector.call(__method__)
     #require 'eventmachine/email_server'
     #include EventMachine::EmailServer
     #require 'ratelimit/bucketbased'
     #require 'dnsbl/client'
-  
+
     #require 'sqlite3'
-    s = SQLite3::Database.new("email_server.sqlite3")
-    userstore = Sqlite3UserStore.new(s)
-    emailstore = Sqlite3EmailStore.new(s)
+    userstore = MemoryUserStore.new(s)
+    emailstore = MemoryEmailStore.new(s)
     userstore << User.new(1, "chris", "chris", "chris@example.org")
-  
+
     config = {
       'default' => RateLimit::Config.new('default', 2, 2, -2, 1, 1, 1),
     }
     storage = RateLimit::Memory.new
     rl = RateLimit::BucketBased.new(storage, config, 'default')
-  
+
     classifier = EventMachine::EmailServer::Classifier.new("test/test.classifier", [:spam, :ham], [:spam])
     classifier.train(:spam, "Amazing pillz viagra cialis levitra staxyn")
     classifier.train(:ham, "Big pigs make great bacon")
-  
-    SMTPServer.reset
+
     SMTPServer.reverse_ptr_check(true)
     SMTPServer.graylist(Hash.new)
     SMTPServer.ratelimiter(rl)
-    SMTPServer.dnsbl_check(true)  
+    SMTPServer.dnsbl_check(true)
     SMTPServer.spf_check(true)
     SMTPServer.reject_filters << /viagra/i
     SMTPServer.classifier(classifier)
-  
+
     EM.run {
       pop3 = EventMachine::start_server "0.0.0.0", 2110, POP3Server, "example.org", userstore, emailstore
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
@@ -370,5 +394,5 @@ Looks like we had fun!
       end
     }
   end
-   
+
 end

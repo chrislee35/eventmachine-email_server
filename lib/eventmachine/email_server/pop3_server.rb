@@ -188,9 +188,7 @@ module EventMachine
     	def stat
     		msgs = bytes = 0
     		@emails.each do |e|
-    			p e
-    			p e.body.length
-    			next if e.marked
+    			next if e.marked == 'true'
     			msgs += 1
     			bytes += e.body.length
     		end
@@ -213,7 +211,7 @@ module EventMachine
       
     	def retr(msgid)
     		msgid = msgid.to_i
-    		return false if msgid > @emails.length or @emails[msgid-1].marked
+    		return false if msgid > @emails.length or @emails[msgid-1].marked == 'true'
     		@emails[msgid-1].body
     	end
       
