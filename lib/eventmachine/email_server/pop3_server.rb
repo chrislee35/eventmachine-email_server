@@ -23,11 +23,15 @@ module EventMachine
       
 			def receive_data(data)
         puts ">> #{data}" if @debug
-        ok, op = process_line(data)
-        if ok
-          puts "<< #{op}" if @debug
-          send_data(op+"\r\n")
+        data.split(/[\r\n]+/).each do |line|
+          process_line(line)
         end
+      end
+      
+      def send(data, close=false)
+        puts "<< #{data}" if @debug
+        send_data("#{data}\r\n")
+        close_connection if close
       end
       
       def unbind(reason=nil)
@@ -38,107 +42,124 @@ module EventMachine
       end
       
     	def process_line(line)
-    		line.chomp!
-    		case @state 
+    		case @state
     		when 'auth'
-    			case line
-    			when /^QUIT$/
-    				return false, "+OK dewey POP3 server signing off"
-          when /^CAPA$/
-            return true, "+OK Capability list follows\r\n"+@@capabilities.join("\r\n")+"\r\n."
-    			when /^USER (.+)$/
-    				user($1)
-    				if @user
-    					return true, "+OK #{@user.username} is most welcome here"
-    				else
-    					@failed += 1
-    					if @failed > 2
-    						return false, "-ERR you're out!"
-    					end
-    					return true, "-ERR sorry, no mailbox for #{$1} here"
-    				end
-    			when /^PASS (.+)$/
-    				if pass($1)
-    					@state = 'trans'
-    					emails
-    					msgs, bytes = stat
-    					return true, "+OK #{@user.username}'s maildrop has #{msgs} messages (#{bytes} octets)"
-    				else
-    					@failed += 1
-    					if @failed > 2
-    						return false, "-ERR you're out!"
-    					end
-    					return true, "-ERR no dope."
-    				end
-    			when /^APOP ([^\s]+) (.+)$/
-    				if apop($1,$2)
-    					@state = 'trans'
-    					emails
-    					return true, "+OK #{@user.username} is most welcome here"
-    				else
-    					@failed += 1
-    					if @failed > 2
-    						return false, "-ERR you're out!"
-    					end
-    					return true, "-ERR sorry, no mailbox for #{$1} here"
-    				end
-    			end
+          auth_state(line)
     		when 'trans'
-    			case line
-    			when /^NOOP$/
-    				return true, "+OK"
-    			when /^STAT$/
-    				msgs, bytes = stat
-    				return true, "+OK #{msgs} #{bytes}"
-    			when /^LIST$/
-    				msgs, bytes = stat
-    				msg = "+OK #{msgs} messages (#{bytes} octets)\r\n"
-    				list.each do |num, bytes|
-    					msg += "#{num} #{bytes}\r\n"
-    				end
-    				msg += "."
-    				return true, msg
-    			when /^LIST (\d+)$/
-    				msgs, bytes = stat
-    				num, bytes = list($1)
-    				if num
-    					return true, "+OK #{num} #{bytes}"
-    				else
-    					return true, "-ERR no such message, only #{msgs} messages in maildrop"
-    				end
-    			when /^RETR (\d+)$/
-    				msg = retr($1)
-    				if msg
-    					msg = "+OK #{msg.length} octets\r\n" + msg + "\r\n."
-    				else
-    					msg = "-ERR no such message"
-    				end
-    				return true, msg
-    			when /^DELE (\d+)$/
-    				if dele($1)
-    					return true, "+OK message #{$1} marked"
-    				else
-    					return true, "-ERR message #{$1} already marked"
-    				end
-    			when /^RSET$/
-    				rset
-    				msgs, bytes = stat
-    				return true, "+OK maildrop has #{msgs} messages (#{bytes} octets)"
-    			when /^QUIT$/
-    				@state = 'update'
-    				quit
-    				msgs, bytes = stat
-    				if msgs > 0
-    					return true, "+OK dewey POP3 server signing off (#{msgs} messages left)"
-    				else
-    					return true, "+OK dewey POP3 server signing off (maildrop empty)"
-    				end
-    			when /^TOP (\d+) (\d+)$/
-    				lines = $2
-    				msg = retr($1)
-    				unless msg
-    					return true, "-ERR no such message"
-    				end
+          trans_state(line)
+    		when 'update'
+          update_state(line)
+        else
+      		send("-ERR unknown command")
+    		end
+    	end
+      
+      def auth_state(line)
+  			case line
+  			when /^QUIT$/
+  				send("+OK dewey POP3 server signing off", true)
+        when /^CAPA$/
+          send("+OK Capability list follows\r\n"+@@capabilities.join("\r\n")+"\r\n.")
+  			when /^USER (.+)$/
+  				user($1)
+  				if @user
+  					send("+OK #{@user.username} is most welcome here")
+  				else
+  					@failed += 1
+  					if @failed > 2
+  						send("-ERR you're out!", true)
+            else
+    					send("-ERR sorry, no mailbox for #{$1} here")
+  					end
+  				end
+  			when /^PASS (.+)$/
+  				if pass($1)
+  					@state = 'trans'
+  					emails
+  					msgs, bytes = stat
+  					send("+OK #{@user.username}'s maildrop has #{msgs} messages (#{bytes} octets)")
+  				else
+  					@failed += 1
+  					if @failed > 2
+  						send("-ERR you're out!", true)
+            else
+              send("-ERR no dope.")
+            end
+  				end
+  			when /^APOP ([^\s]+) (.+)$/
+  				if apop($1,$2)
+  					@state = 'trans'
+  					emails
+  					send("+OK #{@user.username} is most welcome here")
+  				else
+  					@failed += 1
+  					if @failed > 2
+  						send("-ERR you're out!", true)
+            else
+  					  send("-ERR sorry, no mailbox for #{$1} here")
+            end
+  				end
+        else
+          send("-ERR unknown command")
+  			end
+      end
+      
+      def trans_state(line)
+  			case line
+  			when /^NOOP$/
+  				send("+OK")
+  			when /^STAT$/
+  				msgs, bytes = stat
+  				send("+OK #{msgs} #{bytes}")
+  			when /^LIST$/
+  				msgs, bytes = stat
+  				msg = "+OK #{msgs} messages (#{bytes} octets)\r\n"
+  				list.each do |num, bytes|
+  					msg += "#{num} #{bytes}\r\n"
+  				end
+  				msg += "."
+  				send(msg)
+  			when /^LIST (\d+)$/
+  				msgs, bytes = stat
+  				num, bytes = list($1)
+  				if num
+  					send("+OK #{num} #{bytes}")
+  				else
+  					send("-ERR no such message, only #{msgs} messages in maildrop")
+  				end
+  			when /^RETR (\d+)$/
+  				msg = retr($1)
+  				if msg
+  					msg = "+OK #{msg.length} octets\r\n" + msg + "\r\n."
+  				else
+  					msg = "-ERR no such message"
+  				end
+  				send(msg)
+  			when /^DELE (\d+)$/
+  				if dele($1)
+  					send("+OK message #{$1} marked")
+  				else
+  					send("-ERR message #{$1} already marked")
+  				end
+  			when /^RSET$/
+  				rset
+  				msgs, bytes = stat
+  				send("+OK maildrop has #{msgs} messages (#{bytes} octets)")
+  			when /^QUIT$/
+  				@state = 'update'
+  				quit
+  				msgs, bytes = stat
+  				if msgs > 0
+  					send("+OK dewey POP3 server signing off (#{msgs} messages left)", true)
+  				else
+  					send("+OK dewey POP3 server signing off (maildrop empty)", true)
+  				end
+  			when /^TOP (\d+) (\d+)$/
+  				lines = $2
+  				msg = retr($1)
+  				unless msg
+  					send("-ERR no such message")
+          else
     				cnt = nil
     				final = ""
     				msg.split(/\n/).each do |l|
@@ -151,26 +172,31 @@ module EventMachine
     						cnt = 0
     					end
     				end
-    				return true, "+OK\r\n"+final+"\r\n."
-    			when /^UIDL$/
-    				msgid = 0
-    				msg = ''
-    				@emails.each do |e|
-    					msgid += 1
-    					next if e.marked
-    					msg += "#{msgid} #{Digest::MD5.new.update(msg).hexdigest}"
-    				end
-    				return true, "+OK\r\n#{msg}\r\n.";
-    			end
-    		when 'update'
-    			case line
-    			when /^QUIT$/
-    				return true, "+OK dewey POP3 server signing off"
-    			end
-    		end
-    		return true, "-ERR unknown command"
-    	end
-
+    				send("+OK\r\n"+final+"\r\n.")
+          end
+  			when /^UIDL$/
+  				msgid = 0
+  				msg = ''
+  				@emails.each do |e|
+  					msgid += 1
+  					next if e.marked
+  					msg += "#{msgid} #{Digest::MD5.new.update(e.body).hexdigest}\r\n"
+  				end
+  				send("+OK\r\n#{msg}.")
+        else
+          send("-ERR unknown command")
+  			end
+      end
+      
+      def update_state(line)
+  			case line
+  			when /^QUIT$/
+  				send("+OK dewey POP3 server signing off", true)
+        else
+          send("-ERR unknown command")
+  			end
+      end
+      
     	def user(username)
     		@user = @userstore.user_by_username(username)
     	end

@@ -90,8 +90,7 @@ module EventMachine
       end
       
       def post_init
-        puts ">> 220 hello" if @debug
-        send_data "220 #{@hostname} ESMTP Service ready\n"
+        send "220 #{@hostname} ESMTP Service ready"
       end
       
 			def receive_data(data)
@@ -102,7 +101,9 @@ module EventMachine
       end
       
       def check_ptr(helo, ip)
-        if @@reverse_ptr_check
+        if helo =~ /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/ and helo == ip
+          @ptr_ok = true
+        elsif @@reverse_ptr_check
           @ptr_ok = false
           @pending_checks << :ptr
           d = EM::DNS::Resolver.resolve helo
@@ -175,7 +176,9 @@ module EventMachine
 
           pool.perform do |dispatcher|
             completion = dispatcher.dispatch do |spf_server|
-
+              if helo =~ /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/ and helo == ip
+                helo = nil
+              end
               request = SPF::Request.new(
                 versions:      [1, 2],             # optional
                 scope:         'mfrom',            # or 'helo', 'pra'
@@ -235,18 +238,19 @@ module EventMachine
       end
       
      	def process_line(line)
-    		if (@data_mode) && (line.chomp =~ /^\.$/)
+    		if (@data_mode) && (line.chomp == '.')
     			@data_mode = false
           check_reject
           check_classifier
           @pending_checks -= [:content]
+          p @pending_checks
           if @pending_checks.length == 0
             send_answer
           end
     		elsif @data_mode
     			@email_body += line
     		elsif (line =~ /^(HELO|EHLO) (.*)/)
-          helo = $2.chomp
+          helo = $2.chomp.gsub(/^\[/,'').gsub(/\]$/,'')
           port, ip = Socket.unpack_sockaddr_in(get_peername)
           check_ptr(helo, ip)
           check_dnsbl(ip)

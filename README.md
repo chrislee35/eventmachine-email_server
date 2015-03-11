@@ -39,6 +39,7 @@ Or install it yourself as:
 
 Simple usage:
 
+	require 'eventmachine'
 	require 'eventmachine/email_server'
 	include EventMachine::EmailServer
     EM.run {
@@ -48,38 +49,39 @@ Simple usage:
 
 Everything turned on:
 
+    require 'eventmachine'
     require 'eventmachine/email_server'
     include EventMachine::EmailServer
     require 'ratelimit/bucketbased'
-    require 'dnsbl/client'
-    require 'sqlite3'
 	
-    s = SQLite3::Database.new("email_server.sqlite3")
-    userstore = Sqlite3UserStore.new(s)
-    emailstore = Sqlite3EmailStore.new(s)
-    userstore << User.new(1, "chris", "password", "chris@example.org")
-    
+    userstore = MemoryUserStore.new()
+    emailstore = MemoryEmailStore.new()
+    userstore << User.new(1, "chris", "chris", "chris@example.org")
+	
     config = {
       'default' => RateLimit::Config.new('default', 2, 2, -2, 1, 1, 1),
     }
     storage = RateLimit::Memory.new
     rl = RateLimit::BucketBased.new(storage, config, 'default')
-    
+	
     classifier = EventMachine::EmailServer::Classifier.new("test/test.classifier", [:spam, :ham], [:spam])
     classifier.train(:spam, "Amazing pillz viagra cialis levitra staxyn")
     classifier.train(:ham, "Big pigs make great bacon")
-    
+	
     SMTPServer.reverse_ptr_check(true)
     SMTPServer.graylist(Hash.new)
     SMTPServer.ratelimiter(rl)
-    SMTPServer.dnsbl_check(true)  
+    SMTPServer.dnsbl_check(true)
     SMTPServer.spf_check(true)
     SMTPServer.reject_filters << /viagra/i
     SMTPServer.classifier(classifier)
-    
+	
     EM.run {
       pop3 = EventMachine::start_server "0.0.0.0", 2110, POP3Server, "example.org", userstore, emailstore
       smtp = EventMachine::start_server "0.0.0.0", 2025, SMTPServer, "example.org", userstore, emailstore
+      timer = EventMachine::Timer.new(0.1) do
+        EM.stop
+      end
     }
 
 

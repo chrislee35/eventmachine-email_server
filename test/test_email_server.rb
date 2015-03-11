@@ -49,14 +49,10 @@ Looks like we had fun!
     @pool = EM::Pool.new
     SMTPServer.reset
     remove_scraps
+    $dns_port = 53
   end
 
   def remove_scraps
-    ["test.sqlite3", "email_server.sqlite3"].each do |f|
-      if File.exist?("test/#{f}")
-        File.unlink("test/#{f}")
-      end
-    end
   end
 
   def teardown
@@ -313,7 +309,6 @@ Looks like we had fun!
     userstore = MemoryUserStore.new
     emailstore = MemoryEmailStore.new
     setup_user(userstore)
-    $dns_port = 53
 
     SMTPServer.spf_check(true)
     EM.run {
@@ -360,10 +355,10 @@ Looks like we had fun!
 
   def test_example
     return unless @test_vector.call(__method__)
+    #require 'eventmachine'
     #require 'eventmachine/email_server'
     #include EventMachine::EmailServer
     #require 'ratelimit/bucketbased'
-    #require 'dnsbl/client'
 
     userstore = MemoryUserStore.new()
     emailstore = MemoryEmailStore.new()
