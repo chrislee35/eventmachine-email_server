@@ -5,6 +5,8 @@ module EventMachine
 	module EmailServer
 		class POP3Server < EventMachine::Connection
       @@capabilities = [ "TOP", "USER", "UIDL" ]
+      attr_accessor :debug
+
       def initialize(hostname, userstore, emailstore)
         @hostname = hostname
         @userstore = userstore
@@ -12,7 +14,7 @@ module EventMachine
         @state = 'auth' # 'trans' and 'data'
         @auth_attempts = 0
         @apop_challenge = "<#{rand(10**4 - 1)}.#{rand(10**9 - 1)}@#{@hostname}>"
-        @debug = true
+        @debug = false
         @emails = Array.new
       end
       
@@ -31,7 +33,8 @@ module EventMachine
       def send(data, close=false)
         puts "<< #{data}" if @debug
         send_data("#{data}\r\n")
-        close_connection if close
+        puts "++ closing connection" if @debug and close
+        close_connection(true) if close
       end
       
       def unbind(reason=nil)
@@ -183,6 +186,23 @@ module EventMachine
   					msg += "#{msgid} #{Digest::MD5.new.update(e.body).hexdigest}\r\n"
   				end
   				send("+OK\r\n#{msg}.")
+        when /^UIDL (\d+)$/
+          mid = $1
+  				msgid = 0
+          msg = ''
+  				@emails.each do |e|
+  					msgid += 1
+  					next if e.marked
+            if mid == msgid
+              msg += "#{msgid} #{Digest::MD5.new.update(e.body).hexdigest}\r\n"
+              last
+            end
+  				end
+          if msg.length > 0
+            send("+OK\r\n#{msg}.")
+          else
+            send("-ERR no such message, only #{msgid} messages in maildrop")
+          end
         else
           send("-ERR unknown command")
   			end
