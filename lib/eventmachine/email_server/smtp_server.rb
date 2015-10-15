@@ -288,6 +288,10 @@ module EventMachine
     		else
     			send("500 ERROR")
     		end
+      rescue Exception => e
+        send("500 ERROR")
+        print line
+        puts e if @debug
     	end
       
     	def save
