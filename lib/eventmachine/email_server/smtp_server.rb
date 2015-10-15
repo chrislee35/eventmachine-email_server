@@ -20,7 +20,7 @@ module EventMachine
         @@reverse_ptr_check = false
         @@spf_check = false
         @@reject_filters = Array.new
-        @classifier = nil
+        @@classifier = nil
       end
       
       def self.reverse_ptr_check(ptr=nil)
@@ -72,11 +72,13 @@ module EventMachine
         @@classifier
       end
 
+      attr_accessor :debug
+      
       def initialize(hostname, userstore, emailstore)
         @hostname = hostname
         @userstore = userstore
         @emailstore = emailstore
-        @debug = true
+        @debug = false
         @data_mode = false
         @email_body = ""
         @ptr_ok = true
@@ -243,7 +245,7 @@ module EventMachine
           check_reject
           check_classifier
           @pending_checks -= [:content]
-          p @pending_checks
+          p @pending_checks if @debug
           if @pending_checks.length == 0
             send_answer
           end
@@ -261,14 +263,14 @@ module EventMachine
           send("221 #{@hostname} ESMTP server closing connection")
           self.close_connection
     		elsif (line =~ /^MAIL FROM\:/)
-    			@mail_from = (/^MAIL FROM\:<(.+)>.*$/).match(line)[1]
+    			@mail_from = (/^MAIL FROM\:\s*<(.+)>.*$/).match(line)[1]
           if @@spf_check
             port, ip = Socket.unpack_sockaddr_in(get_peername)
             check_spf(helo, ip, @mail_from)
           end
           send("250 OK")
     		elsif (line =~ /^RCPT TO\:/)
-    			rcpt_to = (/^RCPT TO\:<(.+)>.*$/).match(line)[1]
+    			rcpt_to = (/^RCPT TO\:\s*<(.+)>.*$/).match(line)[1]
     			if @userstore.user_by_emailaddress(rcpt_to.strip)
     				@rcpt_to = rcpt_to
             send("250 OK")
@@ -290,10 +292,10 @@ module EventMachine
       
     	def save
     		begin
-    			subject = @email_body.match(/Subject\: (.*?)[\r\n]/i)[1]
+    			subject = @email_body.match(/Subject\:\s*(.*?)[\r\n]/i)[1]
     			u = @userstore.user_by_emailaddress(@rcpt_to.strip)
     		rescue Exception => err
-    			puts err
+    			puts err if @debug
     			return
     		end
     		if u and @mail_from and @rcpt_to
