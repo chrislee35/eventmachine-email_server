@@ -11,6 +11,7 @@ include EventMachine::EmailServer
 require 'net/pop'
 require 'net/smtp'
 require 'ratelimit/bucketbased'
+require 'fileutils'
 
 $dns_port = 53
 
@@ -32,7 +33,7 @@ class TestEmailServer < Minitest::Test
 To: chris@example.org
 Subject: What to do when you're not doing.
 
-Could I interest you in some cialis?
+Could I interest you in some cialis or levitra?
 ")
     @ham_email = EmailTemplate.new("friend@example.org", "chris@example.org", "From: friend@example.org
 To: chris@example.org
@@ -53,6 +54,7 @@ Looks like we had fun!
   end
 
   def remove_scraps
+    FileUtils.remove_dir("test/test.classifier", true)
   end
 
   def teardown
